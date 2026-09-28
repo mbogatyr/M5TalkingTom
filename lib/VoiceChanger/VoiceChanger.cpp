@@ -1,6 +1,13 @@
+// The Arduino core builds with -Os; the sample loops here run about twice
+// as fast with -O2, and the voice change is on the critical path between
+// the user going quiet and the character answering.
+#pragma GCC optimize("O2")
+
 #include "VoiceChanger.h"
 
 #include <math.h>
+
+#include <stdint.h>
 
 #include <algorithm>
 
@@ -17,6 +24,7 @@ constexpr float kHighPassPole = 0.97f;
 constexpr float kButterQ1 = 0.5412f;
 constexpr float kButterQ2 = 1.3066f;
 
+// Rounds by hand: lrintf is a library call, and this runs for every sample.
 inline int16_t clamp16(float v) {
     if (v >= 32767.0f) {
         return 32767;
@@ -24,7 +32,20 @@ inline int16_t clamp16(float v) {
     if (v <= -32768.0f) {
         return -32768;
     }
-    return static_cast<int16_t>(lrintf(v));
+    return static_cast<int16_t>(v >= 0 ? v + 0.5f : v - 0.5f);
+}
+
+// tanh by a Pade approximant, exact at 0 and at +-3 where it reaches +-1;
+// tanhf costs about 2 us a sample on the board.
+inline float softClip(float x) {
+    if (x >= 3.0f) {
+        return 1.0f;
+    }
+    if (x <= -3.0f) {
+        return -1.0f;
+    }
+    const float x2 = x * x;
+    return x * (27.0f + x2) / (27.0f + 9.0f * x2);
 }
 
 } // namespace
@@ -104,7 +125,9 @@ void VoiceChanger::start(const int16_t *input, size_t inputLen, int16_t *scratch
         lp2_.lowPass(cutoff, kButterQ2);
     }
 
-    readPos_ = 0;
+    readIndex_ = 0;
+    readFrac_ = 0;
+    step_ = voice.pitch;
     outLen_ = 0;
     peak_ = 0;
     finishPos_ = 0;
@@ -173,9 +196,10 @@ void VoiceChanger::flushStretch() {
 }
 
 // The window start within +-kSeek of `nominal` whose first half matches
-// the samples at `ref` best (plain cross-correlation). A coarse search on
-// every 4th sample and lag, then a fine one around the winner, costs about
-// a tenth of the full search.
+// the samples at `ref` best (plain cross-correlation, in integers). A coarse
+// search on every 4th lag using every 8th sample, then a full one around the
+// winner, costs about a twentieth of the full search. Speech has little
+// energy above 1 kHz, so the coarse pass still lands next to the right lag.
 int VoiceChanger::bestOffset(size_t ref, long nominal) const {
     const long lo = std::max(0L, nominal - kSeek);
     const long hi = std::min(static_cast<long>(inLen_ - kFrame), nominal + kSeek);
@@ -184,13 +208,14 @@ int VoiceChanger::bestOffset(size_t ref, long nominal) const {
     }
     const int16_t *r = in_ + ref;
 
+    // Products are scaled down by 256 so that 256 of them fit an int32.
     long coarse = lo;
-    float bestScore = -INFINITY;
+    int32_t bestScore = INT32_MIN;
     for (long c = lo; c <= hi; c += 4) {
         const int16_t *x = in_ + c;
-        float s = 0;
-        for (size_t i = 0; i < kHop; i += 4) {
-            s += static_cast<float>(r[i]) * static_cast<float>(x[i]);
+        int32_t s = 0;
+        for (size_t i = 0; i < kHop; i += 8) {
+            s += (static_cast<int32_t>(r[i]) * x[i]) >> 8;
         }
         if (s > bestScore) {
             bestScore = s;
@@ -199,12 +224,12 @@ int VoiceChanger::bestOffset(size_t ref, long nominal) const {
     }
 
     long best = coarse;
-    bestScore = -INFINITY;
+    bestScore = INT32_MIN;
     for (long c = std::max(lo, coarse - 3); c <= std::min(hi, coarse + 3); ++c) {
         const int16_t *x = in_ + c;
-        float s = 0;
+        int32_t s = 0;
         for (size_t i = 0; i < kHop; ++i) {
-            s += static_cast<float>(r[i]) * static_cast<float>(x[i]);
+            s += (static_cast<int32_t>(r[i]) * x[i]) >> 8;
         }
         if (s > bestScore) {
             bestScore = s;
@@ -232,25 +257,33 @@ void VoiceChanger::filterChunk() {
     }
 }
 
+// The ESP32-S3 has a single-precision FPU only, so the read position is an
+// integer index plus a float fraction, and the vibrato's sine is taken once
+// per 32 samples (2 ms), far finer than its 5-7 Hz wobble.
 void VoiceChanger::resampleChunk() {
+    constexpr size_t kWobbleEvery = 32;
     const float wobble = static_cast<float>(2 * kPi * voice_.vibratoHz / kSampleRate);
     for (size_t n = 0; n < kHop; ++n) {
-        const size_t i0 = static_cast<size_t>(readPos_);
-        if (i0 + 1 >= stretchLen_ || outLen_ >= outCap_) {
+        if (readIndex_ + 1 >= stretchLen_ || outLen_ >= outCap_) {
             prepareFinish();
             return;
         }
-        const float frac = static_cast<float>(readPos_ - static_cast<double>(i0));
-        const float y = scratch_[i0] * (1.0f - frac) + scratch_[i0 + 1] * frac;
+        const float a = scratch_[readIndex_];
+        const float y = a + (scratch_[readIndex_ + 1] - a) * readFrac_;
         const int16_t v = clamp16(y);
         out_[outLen_++] = v;
         peak_ = std::max(peak_, static_cast<int32_t>(v < 0 ? -static_cast<int32_t>(v) : v));
 
-        double step = voice_.pitch;
-        if (voice_.vibratoDepth > 0) {
-            step *= 1.0 + voice_.vibratoDepth * sinf(wobble * static_cast<float>(outLen_));
+        if (outLen_ % kWobbleEvery == 1) {
+            step_ = voice_.pitch;
+            if (voice_.vibratoDepth > 0) {
+                step_ *= 1.0f + voice_.vibratoDepth * sinf(wobble * static_cast<float>(outLen_));
+            }
         }
-        readPos_ += step;
+        readFrac_ += step_;
+        const size_t whole = static_cast<size_t>(readFrac_); // floor: it is positive
+        readIndex_ += whole;
+        readFrac_ -= static_cast<float>(whole);
     }
 }
 
@@ -259,7 +292,7 @@ void VoiceChanger::prepareFinish() {
     // before it is applied.
     gain_ = peak_ > 0 ? std::min(kTargetPeak / static_cast<float>(peak_), kMaxGain) : 0.0f;
     drivePeak_ = static_cast<float>(std::max<int32_t>(peak_, 1));
-    driveNorm_ = voice_.drive > 0 ? 1.0f / tanhf(voice_.drive) : 1.0f;
+    driveNorm_ = voice_.drive > 0 ? 1.0f / softClip(voice_.drive) : 1.0f;
     finishPos_ = 0;
     stage_ = outLen_ > 0 ? Stage::Finish : Stage::Done;
 }
@@ -270,7 +303,7 @@ void VoiceChanger::finishChunk() {
     for (size_t i = finishPos_; i < end; ++i) {
         float x = out_[i];
         if (voice_.drive > 0) {
-            x = drivePeak_ * tanhf(voice_.drive * x / drivePeak_) * driveNorm_;
+            x = drivePeak_ * softClip(voice_.drive * x / drivePeak_) * driveNorm_;
         }
         x *= gain_;
         if (i < fade) {

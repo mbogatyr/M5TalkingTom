@@ -60,6 +60,9 @@ class VoiceChanger {
     bool step(size_t work);
 
     bool done() const { return stage_ == Stage::Done; }
+    // 0 idle, 1 stretch, 2 filter, 3 resample, 4 finish, 5 done: for
+    // timing the passes on the board.
+    int stage() const { return static_cast<int>(stage_); }
     const int16_t *output() const { return out_; }
     size_t length() const { return outLen_; }
 
@@ -108,7 +111,9 @@ class VoiceChanger {
     float hpPrevIn_ = 0, hpPrevOut_ = 0;
 
     // Resample.
-    double readPos_ = 0;
+    size_t readIndex_ = 0;
+    float readFrac_ = 0;
+    float step_ = 1;
     size_t outLen_ = 0;
     int32_t peak_ = 0;
 
