@@ -19,6 +19,9 @@ constexpr uint32_t kFrameMs = 33;       // about 30 fps
 constexpr uint32_t kChangerBudgetUs = 45000;
 constexpr uint32_t kMinThinkMs = 300;   // long enough to see the pose
 constexpr uint32_t kPlaybackGraceMs = 100;
+// The speaker's DMA ring (8 x 256 frames at 48 kHz) holds about 43 ms, so
+// the sound comes out that much after playRaw(); the mouth follows it.
+constexpr uint32_t kLipDelayMs = 40;
 
 AudioCapture mic;
 VoicePlayer speaker;
@@ -260,8 +263,8 @@ void drawFrame(uint32_t now) {
     f.previousCharacter = state.previousCharacter();
     f.switchMs = now - state.switchedAtMs();
     f.switching = state.hasSwitched() && f.switchMs < Renderer::kSwitchMs;
-    if (f.mode == Mode::Talking) {
-        f.mouth = lips.openness(now - playStartMs);
+    if (f.mode == Mode::Talking && now - playStartMs >= kLipDelayMs) {
+        f.mouth = lips.openness(now - playStartMs - kLipDelayMs);
     }
     if (f.mode == Mode::Hearing) {
         f.micLevel = micLevel();
