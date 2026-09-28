@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>M5TalkingTom characters</title>
+<!--
+  Reference drawing of the three characters (cat, hippo, mouse) at the real
+  StickS3 resolution, 135x240 portrait.
+
+  It uses only shapes LovyanGFX has on the board (ellipses, triangles, round
+  rects, wide lines, arcs, a clip rect for eyelids), so src/Painter and
+  src/Renderer port it one to one: same coordinates, colours, poses and
+  timings. Change the look here first, check it in a browser, then move the
+  change to the firmware.
+
+  Tricks that carry over to C++:
+  - outline in two passes: a group of shapes grown by 2 px in INK, then the
+    same group filled;
+  - head tilt rotates the anchor points around the neck; shapes stay
+    axis-aligned;
+  - one offset and squash/stretch around the floor line for the character
+    switch bounce;
+  - an eyelid is the eye ellipse filled with fur colour through a clip rect,
+    plus an edge line.
+  The mouth here follows a made-up envelope; on the board LipSync drives it.
+-->
+<style>
+  body { margin: 0; padding: 16px; font-family: -apple-system, system-ui, sans-serif; background: #fafaf7; color: #222; }
+  #tt-ctl { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 0 0 16px; }
+  #tt-ctl button { font: inherit; font-size: 14px; padding: 6px 12px; border-radius: 8px; border: 1px solid #bbb; background: #fff; cursor: pointer; }
+  #tt-ctl button[aria-pressed="true"] { background: #e6f1fb; color: #185fa5; border-color: #378add; }
+  #tt-devs { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; }
+  .dev { background: #f1efe8; border: 1px solid #ddd; border-radius: 16px; padding: 10px 10px 12px; }
+  .dev canvas { width: 270px; height: 480px; display: block; border-radius: 4px; image-rendering: pixelated; }
+  .dev button { width: 34px; height: 34px; border-radius: 50%; background: #2f6fd6; border: none; margin: 10px auto 0; display: block; cursor: pointer; padding: 0; }
+</style>
+</head>
+<body>
+<div id="tt-ctl"></div>
+<div id="tt-devs"></div>
+<script>
+(() => {
+const W = 135, H = 240, FLOOR = 222, CX = 67, INK = '#2A2230';
+const PAL = {
+  cat: { name: 'Cat', fur: '#8FA3BF', dark: '#6A7F9E', light: '#EEF1F6', pink: '#F2A7B8', nose: '#E26D8A', iris: '#7CC45A', bg: '#F6E3C3', bg2: '#E9CFA6', floor: '#B98352', floor2: '#A5703F' },
+  hippo: { name: 'Hippo', skin: '#9D8CC8', belly: '#C9BDE8', muzzle: '#B8A8DE', pink: '#F2A7B8', sky: '#CDEBF5', water: '#4FA3C7', water2: '#8FCBE3' },
+  mouse: { name: 'Mouse', fur: '#A99B8D', light: '#EFE5DA', pink: '#F4A9BB', nose: '#E8738F', bg: '#DDEFD8', bg2: '#CBE4C4', floor: '#C7A57B', cheese: '#F6C945', hole: '#DDA42A' },
+};
+const ORDER = ['cat', 'hippo', 'mouse'];
+const hash = n => { const x = Math.sin(n * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+// Made-up speech envelope: syllables at ~3.4 Hz, a pause every 3.2 s.
+const env = t => {
+  const s = Math.max(0, Math.sin(t * 6.2832 * 3.4 + 1.3 * Math.sin(t * 1.1)));
+  const ph = (t % 3.2) < 2.5 ? 1 : 0;
+  const a = .55 + .45 * Math.sin(t * .8 + .5);
+  return Math.min(1, Math.pow(s, .7) * a * ph * 1.2);
+};
+const circ = (ctx, x, y, rx, ry, c) => { ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, 6.2832); ctx.fill(); };
+
+// Shape helpers. Outlined shapes (e, c, t, l, rr) take part in both passes of
+// part(); flat ones (fe, fc, ft, fl) only in the fill pass.
+function painter(ctx) {
+  const P = { mode: 1, ol: 2, T: { dx: 0, dy: 0, sx: 1, sy: 1 }, R: null };
+  const tp = (x, y) => {
+    if (P.R) { const X = x - P.R.px, Y = y - P.R.py; x = P.R.px + X * P.R.c - Y * P.R.s; y = P.R.py + X * P.R.s + Y * P.R.c; }
+    return [CX + (x - CX) * P.T.sx + P.T.dx, FLOOR + (y - FLOOR) * P.T.sy + P.T.dy];
+  };
+  const col = (c, o) => o ? (P.mode === 0 ? INK : c) : (P.mode === 1 ? c : null);
+  const gr = o => o && P.mode === 0 ? P.ol : 0;
+  const E = (x, y, rx, ry, c, o) => { const k = col(c, o); if (!k) return; const [X, Y] = tp(x, y), g = gr(o); ctx.fillStyle = k; ctx.beginPath(); ctx.ellipse(X, Y, Math.max(.3, rx * P.T.sx + g), Math.max(.3, ry * P.T.sy + g), 0, 0, 6.2832); ctx.fill(); };
+  const T = (x0, y0, x1, y1, x2, y2, c, o) => {
+    const k = col(c, o); if (!k) return;
+    let q = [tp(x0, y0), tp(x1, y1), tp(x2, y2)];
+    const g = gr(o);
+    if (g) {
+      const mx = (q[0][0] + q[1][0] + q[2][0]) / 3, my = (q[0][1] + q[1][1] + q[2][1]) / 3;
+      q = q.map(([x, y]) => { const dx = x - mx, dy = y - my, d = Math.hypot(dx, dy) || 1; return [x + dx / d * g * 1.8, y + dy / d * g * 1.8]; });
+    }
+    ctx.fillStyle = k; ctx.beginPath(); ctx.moveTo(q[0][0], q[0][1]); ctx.lineTo(q[1][0], q[1][1]); ctx.lineTo(q[2][0], q[2][1]); ctx.closePath(); ctx.fill();
+  };
+  const Ln = (x0, y0, x1, y1, r, c, o) => { const k = col(c, o); if (!k) return; const a = tp(x0, y0), b = tp(x1, y1), g = gr(o); ctx.strokeStyle = k; ctx.lineCap = 'round'; ctx.lineWidth = Math.max(1, (r * (P.T.sx + P.T.sy) / 2 + g) * 2); ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); };
+  const RR = (x, y, w, h, r, c, o) => { const k = col(c, o); if (!k) return; const a = tp(x, y), g = gr(o); ctx.fillStyle = k; ctx.beginPath(); ctx.roundRect(a[0] - g, a[1] - g, w * P.T.sx + 2 * g, h * P.T.sy + 2 * g, r + g); ctx.fill(); };
+  Object.assign(P, {
+    e: (x, y, rx, ry, c) => E(x, y, rx, ry, c, true), fe: (x, y, rx, ry, c) => E(x, y, rx, ry, c, false),
+    c: (x, y, r, c) => E(x, y, r, r, c, true), fc: (x, y, r, c) => E(x, y, r, r, c, false),
+    t: (a, b, c2, d, e2, f, c) => T(a, b, c2, d, e2, f, c, true), ft: (a, b, c2, d, e2, f, c) => T(a, b, c2, d, e2, f, c, false),
+    l: (a, b, c2, d, r, c) => Ln(a, b, c2, d, r, c, true), fl: (a, b, c2, d, r, c) => Ln(a, b, c2, d, r, c, false),
+    rr: (x, y, w, h, r, c) => RR(x, y, w, h, r, c, true),
+    part: (fn, ol) => { P.ol = ol || 2; P.mode = 0; fn(); P.mode = 1; fn(); P.ol = 2; },
+    rot: (px, py, a) => { P.R = a ? { px, py, c: Math.cos(a), s: Math.sin(a) } : null; },
+    // f: 0 = open, 1 = closed.
+    lid: (x, y, rx, ry, f, c) => {
+      if (f >= .95) { E(x, y, rx + .6, ry + .6, c, false); Ln(x - rx * .85, y + 1, x, y + ry * .35, .7, INK, false); Ln(x, y + ry * .35, x + rx * .85, y + 1, .7, INK, false); return; }
+      const [X, Y] = tp(x, y), RX = rx * P.T.sx, RY = ry * P.T.sy;
+      ctx.save(); ctx.beginPath(); ctx.rect(X - RX - 3, Y - RY - 3, 2 * RX + 6, 3 + 2 * RY * f); ctx.clip(); E(x, y, rx + .6, ry + .6, c, false); ctx.restore();
+      const ly = y - ry + 2 * ry * f, hw = rx * Math.sqrt(Math.max(0, 1 - ((ly - y) / ry) ** 2));
+      Ln(x - hw, ly, x + hw, ly, .7, INK, false);
+    },
+  });
+  return P;
+}
+
+function eye(P, x, y, rx, ry, o) {
+  P.part(() => P.e(x, y, rx, ry, '#FFFFFF'), 1.5);
+  const lx = o.look[0], ly = o.look[1];
+  if (o.iris) P.fe(x + lx, y + 1 + ly, o.ir, o.ir * 1.1, o.iris);
+  P.fe(x + lx, y + 1 + ly, o.prx, o.pry, '#15121A');
+  P.fc(x + lx + o.prx * .5 + 1, y - 2 + ly, 1.6, '#FFFFFF');
+  if (o.lid > .02) P.lid(x, y, rx, ry, Math.min(1, o.lid), o.lidC);
+}
+
+// Everything that moves, as a function of the state and the time.
+// sp: the hippo is slower, the mouse quicker.
+function pose(ch, st, t, sm) {
+  const sp = ch === 'hippo' ? .7 : ch === 'mouse' ? 1.4 : 1;
+  const p = { st, breath: Math.sin(t * 6.2832 * .45 * sp), bob: 0, tilt: 0, mouth: 0, lid: 0, look: [0, 0], earL: 0, earR: 0, level: 0, hop: 0, gL: 0, gR: 0, wave: 0 };
+  const per = 3.3, k = Math.floor(t / per), ph = t - k * per, at = hash(k) * 2.4 + .3;
+  if (ph > at && ph < at + .14) p.lid = 1;
+  const k2 = Math.floor(t / 2.7), ph2 = t - k2 * 2.7;
+  if (hash(k2 + 50) > .45 && ph2 < .3) { const v = Math.sin(ph2 / .3 * Math.PI) * 4; if (hash(k2 + 7) > .5) p.earL = v; else p.earR = v; }
+  let target = 0;
+  if (st === 'talk') { target = env(t * sp); const g = .35 + .65 * target; p.gL = Math.max(0, Math.sin(t * 2.2 * sp)) * g; p.gR = Math.max(0, Math.sin(t * 2.2 * sp + Math.PI)) * g; }
+  if (st === 'hear') { p.tilt = .17; p.level = .5 + .5 * Math.abs(Math.sin(t * 6) * Math.sin(t * 2.1)); p.earR = -3; p.look = [2, 0]; }
+  if (st === 'think') { p.look = [2, -3]; p.tilt = -.07; }
+  if (st === 'sleepy') { p.lid = Math.max(p.lid, .62 + .28 * Math.sin(t * .9)); const y = t % 5.5; if (y < 1.6) { target = Math.sin(y / 1.6 * Math.PI) * .85; p.lid = Math.max(p.lid, .85); } p.tilt = .07 * Math.sin(t * .5); }
+  if (st === 'bye') { p.wave = Math.sin(t * 10); target = .35 + .25 * Math.sin(t * 6); }
+  if (ch === 'mouse' && st === 'idle') { const h = t % 3.6; if (h < .42) p.hop = -Math.sin(h / .42 * Math.PI) * 9; }
+  // Fast attack, slow release.
+  sm.m += (target - sm.m) * (target > sm.m ? .6 : .3);
+  p.mouth = Math.max(0, sm.m);
+  if (st === 'talk') { p.bob = -p.mouth * 3; if (ch === 'mouse') p.hop = -p.mouth * 5; }
+  return p;
+}
+
+function drawCat(P, C, p, t) {
+  const b = p.breath, bodyY = 170 - b * 1.2, hy = 104 - b * 1.8 + p.bob, m = p.mouth;
+  const sw = Math.sin(t * 1.7) * (p.st === 'talk' ? 1.4 : 1), q = [];
+  for (let i = 0; i <= 12; i++) { const u = i / 12; q.push([88 + 26 * Math.sin(u * 1.4) + sw * 10 * u * u, 206 - 70 * u]); }
+  P.part(() => { for (let i = 0; i < 12; i++) P.l(q[i][0], q[i][1], q[i + 1][0], q[i + 1][1], 4.2, i >= 9 ? C.dark : C.fur); });
+  P.part(() => P.e(67, bodyY, 28, 38 + b * .8, C.fur));
+  P.fe(67, bodyY + 9, 17, 25, C.light);
+  P.part(() => { P.e(51, 214, 13, 7, C.fur); P.e(83, 214, 13, 7, C.fur); });
+  P.rot(67, hy + 34, p.tilt);
+  P.part(() => { P.t(34, hy - 8, 40, hy - 52 + p.earL, 62, hy - 26, C.fur); P.t(100, hy - 8, 94, hy - 52 + p.earR, 72, hy - 26, C.fur); });
+  P.ft(40, hy - 14, 43, hy - 42 + p.earL, 56, hy - 26, C.pink); P.ft(94, hy - 14, 91, hy - 42 + p.earR, 78, hy - 26, C.pink);
+  P.part(() => { P.e(67, hy, 37, 31, C.fur); P.t(26, hy + 10, 40, hy, 40, hy + 20, C.fur); P.t(108, hy + 10, 94, hy, 94, hy + 20, C.fur); });
+  P.fl(60, hy - 30, 60, hy - 23, 1.1, C.dark); P.fl(67, hy - 31, 67, hy - 23, 1.1, C.dark); P.fl(74, hy - 30, 74, hy - 23, 1.1, C.dark);
+  P.fe(67, hy + 15 + m * 2, 22, 13 + m * 3, C.light);
+  const eo = { iris: C.iris, ir: 7.5, prx: 2.8, pry: 6, lidC: C.fur, lid: p.lid, look: p.look };
+  eye(P, 53, hy - 5, 10, 12, eo); eye(P, 81, hy - 5, 10, 12, eo);
+  if (m > .06) { P.part(() => P.e(67, hy + 17 + m * 5, 5 + m * 6, 1.5 + m * 9, '#6A1F2F'), 1.2); P.fe(67, hy + 19 + m * 10, 3 + m * 4, 1 + m * 3.5, '#F07C93'); }
+  else { P.fl(67, hy + 10, 67, hy + 13, .6, INK); P.fl(67, hy + 13, 63, hy + 16, .6, INK); P.fl(63, hy + 16, 59, hy + 13, .6, INK); P.fl(67, hy + 13, 71, hy + 16, .6, INK); P.fl(71, hy + 16, 75, hy + 13, .6, INK); }
+  P.fe(67, hy + 7, 5, 3.5, C.nose);
+  for (const s of [-1, 1]) { P.fl(67 + s * 16, hy + 13, 67 + s * 40, hy + 9, .5, INK); P.fl(67 + s * 16, hy + 16, 67 + s * 40, hy + 18, .5, INK); }
+  P.rot(0, 0, 0);
+  let pl = [41, bodyY + 14 + Math.sin(t * 1.3)], pr = [93, bodyY + 14 - Math.sin(t * 1.3)];
+  if (p.st === 'talk') { pl = [38 - 8 * p.gL, bodyY + 10 - 30 * p.gL]; pr = [96 + 8 * p.gR, bodyY + 10 - 30 * p.gR]; }
+  if (p.st === 'hear') pr = [110, hy - 2];
+  if (p.st === 'think') pr = [80, hy + 36];
+  if (p.st === 'bye') pr = [106 + p.wave * 7, hy - 28];
+  P.part(() => { P.l(46, bodyY - 24, pl[0], pl[1], 6, C.fur); P.c(pl[0], pl[1], 7, C.fur); });
+  P.part(() => { P.l(88, bodyY - 24, pr[0], pr[1], 6, C.fur); P.c(pr[0], pr[1], 7, C.fur); });
+  return { ear: [116, hy - 14], head: [85, hy - 40] };
+}
+
+function drawHippo(P, C, p, t) {
+  const b = p.breath, bodyY = 182 - b * 1.6, hy = 96 - b * 2.2 + p.bob, m = p.mouth;
+  P.part(() => P.e(67, bodyY, 50, 44 + b, C.skin));
+  P.fe(67, bodyY + 12, 33, 30, C.belly);
+  P.rot(67, hy + 40, p.tilt);
+  P.part(() => { P.e(42, hy - 38 + p.earL, 7, 8, C.skin); P.e(92, hy - 38 + p.earR, 7, 8, C.skin); });
+  P.fe(42, hy - 37 + p.earL, 3.5, 4.5, C.pink); P.fe(92, hy - 37 + p.earR, 3.5, 4.5, C.pink);
+  P.part(() => { P.e(67, hy - 12, 31, 26, C.skin); P.c(52, hy - 28, 12, C.skin); P.c(82, hy - 28, 12, C.skin); });
+  const eo = { iris: null, ir: 0, prx: 3.4, pry: 3.8, lidC: C.skin, lid: Math.max(p.lid, .28), look: p.look };
+  eye(P, 52, hy - 28, 7.5, 7.5, eo); eye(P, 82, hy - 28, 7.5, 7.5, eo);
+  // The lower jaw drops and the upper muzzle lifts a little.
+  const lowY = hy + 26 + m * 36, upY = hy + 12 - m * 6;
+  if (m > .06) { P.part(() => P.e(67, (upY + lowY) / 2 + 2, 32, (lowY - upY) / 2 + 4, '#7A2340'), 1.5); P.fe(67, lowY - 14, 21, 3 + m * 5, '#EE7C98'); }
+  P.part(() => P.e(67, lowY, 36, 14, C.muzzle));
+  if (m > .06) P.part(() => { const th = 7 + m * 7; P.rr(41, lowY - 9 - th, 7, th + 3, 3, '#FFFFFF'); P.rr(86, lowY - 9 - th, 7, th + 3, 3, '#FFFFFF'); }, 1.2);
+  P.part(() => P.e(67, upY, 42, 22, C.muzzle));
+  P.fe(53, upY - 8, 4.5, 3.2, '#5B4A86'); P.fe(81, upY - 8, 4.5, 3.2, '#5B4A86');
+  P.fe(33, upY + 5, 6, 3.5, '#E6A0C8'); P.fe(101, upY + 5, 6, 3.5, '#E6A0C8');
+  if (m <= .06) { P.fl(40, upY + 13, 52, upY + 17, .8, INK); P.fl(52, upY + 17, 82, upY + 17, .8, INK); P.fl(82, upY + 17, 94, upY + 13, .8, INK); }
+  P.rot(0, 0, 0);
+  let pl = [20, bodyY + 8 + Math.sin(t * .9)], pr = [114, bodyY + 8 - Math.sin(t * .9)];
+  if (p.st === 'talk') { pl = [16 - 4 * p.gL, bodyY + 4 - 30 * p.gL]; pr = [118 + 4 * p.gR, bodyY + 4 - 30 * p.gR]; }
+  if (p.st === 'hear') pr = [118, hy + 18];
+  if (p.st === 'think') pr = [96, hy + 46];
+  if (p.st === 'bye') pr = [120 + p.wave * 5, hy + 2];
+  P.part(() => { P.l(28, bodyY - 18, pl[0], pl[1], 8, C.skin); P.c(pl[0], pl[1], 9.5, C.skin); });
+  P.part(() => { P.l(106, bodyY - 18, pr[0], pr[1], 8, C.skin); P.c(pr[0], pr[1], 9.5, C.skin); });
+  return { ear: [106, hy - 40], head: [84, hy - 44] };
+}
+
+function drawMouse(P, C, p, t) {
+  const b = p.breath, h = p.hop, bodyY = 182 - b + h, hy = 130 - b * 1.4 + h + p.bob, m = p.mouth;
+  const q = [];
+  for (let i = 0; i <= 16; i++) { const u = i / 16; q.push([84 + 36 * u + 5 * Math.sin(u * 8 + t * 3) * u, 206 - 10 * Math.sin(u * Math.PI) - 44 * u * u + h * (1 - u)]); }
+  P.part(() => { for (let i = 0; i < 16; i++) P.l(q[i][0], q[i][1], q[i + 1][0], q[i + 1][1], 1.8, C.pink); }, 1.2);
+  P.part(() => P.e(67, bodyY, 23, 30 + b * .6, C.fur));
+  P.fe(67, bodyY + 7, 15, 20, C.light);
+  P.part(() => { P.e(55, 214 + h, 11, 4.5, C.pink); P.e(79, 214 + h, 11, 4.5, C.pink); }, 1.5);
+  P.rot(67, hy + 24, p.tilt);
+  P.part(() => { P.c(40, hy - 26 + p.earL, 21, C.fur); P.c(94, hy - 26 + p.earR, 21, C.fur); });
+  P.fc(40, hy - 25 + p.earL, 14, C.pink); P.fc(94, hy - 25 + p.earR, 14, C.pink);
+  P.part(() => { P.e(67, hy, 27, 23, C.fur); P.e(67, hy + 11, 15, 11, C.fur); });
+  P.fe(67, hy + 13, 11, 7, C.light);
+  for (const x of [56, 78]) {
+    P.fe(x + p.look[0], hy - 4 + p.look[1], 6, 8, '#15121A');
+    P.fc(x + 2 + p.look[0], hy - 7 + p.look[1], 2.2, '#FFFFFF');
+    P.fc(x - 2 + p.look[0], hy - 1 + p.look[1], 1, '#FFFFFF');
+    if (p.lid > .02) P.lid(x, hy - 4, 6.5, 8.5, Math.min(1, p.lid), C.fur);
+  }
+  const sn = p.st === 'idle' && Math.sin(t * .9) > .5 ? Math.sin(t * 16) : 0;
+  if (m > .06) P.fe(67, hy + 24 + m * 3, 3.5 + m * 4, 1 + m * 6, '#5A1830'); else { P.fl(63, hy + 23, 67, hy + 25, .5, INK); P.fl(67, hy + 25, 71, hy + 23, .5, INK); }
+  P.part(() => P.rr(64, hy + 19, 6, 5.5, 1.2, '#FFFFFF'), 1); P.fl(67, hy + 20, 67, hy + 24, .4, '#B9B0A8');
+  P.fc(67, hy + 15 + sn, 4.5, C.nose); P.fc(68.5, hy + 13.5 + sn, 1.3, '#FFFFFF');
+  const tw = p.st === 'idle' ? Math.sin(t * 9) * (Math.sin(t * .7) > .3 ? 1.5 : 0) : 0;
+  for (const s of [-1, 1]) { P.fl(67 + s * 10, hy + 15, 67 + s * 42, hy + 8 + tw, .5, INK); P.fl(67 + s * 10, hy + 18, 67 + s * 42, hy + 19 - tw, .5, INK); }
+  P.rot(0, 0, 0);
+  let pl = [61, bodyY - 4], pr = [73, bodyY - 4];
+  if (p.st === 'talk') { pl = [44 - 6 * p.gL, bodyY - 10 - 22 * p.gL]; pr = [90 + 6 * p.gR, bodyY - 10 - 22 * p.gR]; }
+  if (p.st === 'hear') pr = [105, hy - 4];
+  if (p.st === 'think') pr = [76, hy + 30];
+  if (p.st === 'bye') pr = [109 + p.wave * 6, hy - 16];
+  P.part(() => { P.l(51, bodyY - 18, pl[0], pl[1], 2.8, C.fur); P.c(pl[0], pl[1], 4.2, C.pink); }, 1.5);
+  P.part(() => { P.l(83, bodyY - 18, pr[0], pr[1], 2.8, C.fur); P.c(pr[0], pr[1], 4.2, C.pink); }, 1.5);
+  return { ear: [121, hy - 6], head: [100, hy - 46] };
+}
+const DRAW = { cat: drawCat, hippo: drawHippo, mouse: drawMouse };
+
+function bg(ctx, ch, t) {
+  const C = PAL[ch];
+  if (ch === 'cat') {
+    ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = C.bg2; ctx.fillRect(0, 170, W, 36);
+    ctx.fillStyle = C.floor2; ctx.fillRect(0, 168, W, 2);
+    ctx.fillStyle = C.floor; ctx.fillRect(0, 206, W, 34);
+    ctx.fillStyle = C.floor2; for (const x of [18, 52, 86, 120]) ctx.fillRect(x, 206, 1, 34); ctx.fillRect(0, 206, W, 1.5);
+    circ(ctx, 67, 221, 52, 9, '#C9594D'); circ(ctx, 67, 221, 40, 6, '#E07A6C');
+    ctx.fillStyle = INK; ctx.fillRect(10, 32, 28, 22); ctx.fillStyle = '#9FD3E8'; ctx.fillRect(12, 34, 24, 18);
+    circ(ctx, 23, 43, 6, 3.5, '#F29A4A'); ctx.fillStyle = '#F29A4A'; ctx.beginPath(); ctx.moveTo(28, 43); ctx.lineTo(33, 39); ctx.lineTo(33, 47); ctx.fill();
+  }
+  if (ch === 'hippo') {
+    ctx.fillStyle = C.sky; ctx.fillRect(0, 0, W, H);
+    circ(ctx, 20, 38, 11, 11, '#FFD45C');
+    ctx.fillStyle = '#9FD28A'; ctx.fillRect(0, 188, W, 16);
+    ctx.strokeStyle = '#5E9E4B'; ctx.lineWidth = 2; ctx.lineCap = 'round';
+    for (const [x0, x1, y1] of [[8, 5, 158], [11, 14, 164], [15, 20, 170], [124, 121, 166], [128, 131, 160]]) { ctx.beginPath(); ctx.moveTo(x0, 200); ctx.lineTo(x1 + Math.sin(t * 1.2 + x0) * 1.5, y1); ctx.stroke(); }
+  }
+  if (ch === 'mouse') {
+    ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = C.bg2; ctx.fillRect(0, 196, W, 10);
+    ctx.fillStyle = C.floor; ctx.fillRect(0, 206, W, 34);
+    circ(ctx, 24, 186, 15, 12, INK); ctx.fillStyle = INK; ctx.fillRect(9, 186, 30, 20);
+    circ(ctx, 24, 186, 13, 10, '#3B2F2B'); ctx.fillStyle = '#3B2F2B'; ctx.fillRect(11, 186, 26, 20);
+    ctx.fillStyle = INK; ctx.beginPath(); ctx.moveTo(95, 216); ctx.lineTo(132, 216); ctx.lineTo(132, 192); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = C.cheese; ctx.beginPath(); ctx.moveTo(99, 214.5); ctx.lineTo(130.5, 214.5); ctx.lineTo(130.5, 195); ctx.closePath(); ctx.fill();
+    circ(ctx, 122, 208, 3, 2.5, C.hole); circ(ctx, 127, 201, 2, 2, C.hole); circ(ctx, 113, 211, 2, 1.6, C.hole);
+  }
+}
+
+// In front of the character: the hippo's pond.
+function fg(ctx, ch, t) {
+  if (ch !== 'hippo') return;
+  const C = PAL.hippo;
+  ctx.fillStyle = C.water; ctx.fillRect(0, 204, W, 36);
+  for (let x = -12; x < W + 12; x += 12) circ(ctx, x + (t * 8) % 12, 204, 7, 3.5, C.water);
+  ctx.strokeStyle = C.water2; ctx.lineWidth = 1.5; ctx.lineCap = 'round';
+  for (const [x, y, w] of [[20, 214, 12], [70, 222, 16], [104, 212, 10], [40, 230, 14], [92, 232, 12]]) { const o = Math.sin(t * 1.5 + x) * 3; ctx.beginPath(); ctx.moveTo(x + o, y); ctx.lineTo(x + o + w, y); ctx.stroke(); }
+}
+
+function bar(ctx, ch) {
+  ctx.fillStyle = '#1B1720'; ctx.fillRect(0, 0, W, 18);
+  ctx.fillStyle = '#FFFFFF'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillText(PAL[ch].name, 6, 10);
+  ORDER.forEach((c, i) => { const r = c === ch ? 3.2 : 2.6; circ(ctx, 107 + i * 10, 9.5, r, r, c === ch ? '#FFFFFF' : '#5A5462'); });
+}
+
+// Sound waves at the ear, floating "z", the goodbye bubble.
+function over(ctx, st, a, p, t) {
+  if (st === 'hear') {
+    const n = 1 + Math.floor(p.level * 2.99);
+    ctx.strokeStyle = INK; ctx.lineWidth = 2; ctx.lineCap = 'round';
+    for (let i = 0; i < n; i++) { ctx.beginPath(); ctx.arc(a.ear[0] - 6, a.ear[1], 6 + i * 5, -.8, .8); ctx.stroke(); }
+  }
+  if (st === 'sleepy') {
+    ctx.fillStyle = INK; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (let i = 0; i < 3; i++) { const ph = (t * .45 + i / 3) % 1; ctx.font = 'bold ' + Math.round(8 + ph * 7) + 'px sans-serif'; ctx.fillText('z', a.head[0] + 8 + i * 6 + Math.sin(ph * 6) * 2, Math.max(28, a.head[1] - ph * 24)); }
+  }
+  if (st === 'bye') {
+    ctx.fillStyle = INK; ctx.beginPath(); ctx.roundRect(6, 24, 50, 24, 7); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(28, 46); ctx.lineTo(44, 46); ctx.lineTo(47, 58); ctx.fill();
+    ctx.fillStyle = '#FFFFFF'; ctx.beginPath(); ctx.roundRect(7.5, 25.5, 47, 21, 6); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(30, 45); ctx.lineTo(42.5, 45); ctx.lineTo(45, 54.5); ctx.fill();
+    ctx.fillStyle = INK; ctx.font = 'bold 12px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('Bye!', 31, 36.5);
+  }
+}
+
+// Character switch: the old one drops out (0.25 s), the new one falls in,
+// squashes on landing and bounces once (0.6 s).
+function swXf(e) {
+  if (e < .25) { const v = e / .25; return ['from', { dy: 260 * v * v, sx: 1, sy: 1 }]; }
+  const u = (e - .25) / .6;
+  if (u < .55) { const v = u / .55; return ['to', { dy: -250 * (1 - v * v), sx: .9, sy: 1.1 }]; }
+  if (u < .75) { const s = Math.sin((u - .55) / .2 * Math.PI); return ['to', { dy: 0, sx: 1 + .16 * s, sy: 1 - .14 * s }]; }
+  if (u < 1) return ['to', { dy: -7 * Math.sin((u - .75) / .25 * Math.PI), sx: 1, sy: 1 }];
+  return null;
+}
+
+const autoSt = t => { const c = t % 9.6; return c < 2.2 ? 'idle' : c < 4.8 ? 'hear' : c < 5.3 ? 'think' : c < 8.6 ? 'talk' : 'idle'; };
+const STATES = [['auto', 'Auto'], ['idle', 'Listening'], ['hear', 'Hears you'], ['think', 'Thinking'], ['talk', 'Talking'], ['sleepy', 'Sleepy'], ['bye', 'Goodbye']];
+let mode = 'auto';
+const ctl = document.getElementById('tt-ctl'), btns = {};
+for (const [k, l] of STATES) { const b = document.createElement('button'); b.textContent = l; b.onclick = () => { mode = k; paint(); }; btns[k] = b; ctl.appendChild(b); }
+function paint() { for (const k in btns) btns[k].setAttribute('aria-pressed', k === mode); }
+paint();
+
+const root = document.getElementById('tt-devs');
+const devs = ORDER.map((ch, i) => {
+  const w = document.createElement('div'); w.className = 'dev';
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const b = document.createElement('button'); b.title = 'Blue button: next character'; b.setAttribute('aria-label', b.title);
+  w.appendChild(cv); w.appendChild(b); root.appendChild(w);
+  const d = { ch, ctx: cv.getContext('2d'), sw: null, sm: { m: 0 }, off: i * 1.7 };
+  d.P = painter(d.ctx);
+  b.onclick = () => { const to = ORDER[(ORDER.indexOf(d.ch) + 1) % 3]; d.sw = { t0: performance.now() / 1000, from: d.ch, to }; d.ch = to; };
+  return d;
+});
+
+function render(t) {
+  for (const d of devs) {
+    const ctx = d.ctx, P = d.P, tt = t + d.off;
+    let ch = d.ch, xf = { dy: 0, sx: 1, sy: 1 }, st = mode === 'auto' ? autoSt(t) : mode;
+    if (d.sw) { const r = swXf(t - d.sw.t0); if (r) { ch = r[0] === 'from' ? d.sw.from : d.sw.to; xf = r[1]; st = 'idle'; } else d.sw = null; }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    bg(ctx, ch, tt);
+    const p = pose(ch, st, tt, d.sm);
+    P.T = { dx: 0, dy: xf.dy, sx: xf.sx, sy: xf.sy };
+    const a = DRAW[ch](P, PAL[ch], p, tt);
+    P.T = { dx: 0, dy: 0, sx: 1, sy: 1 }; P.rot(0, 0, 0);
+    fg(ctx, ch, tt);
+    if (!d.sw) over(ctx, st, a, p, tt);
+    bar(ctx, ch);
+    if (st === 'bye') { const c = tt % 3.8, al = c < 2.4 ? 0 : c < 3 ? (c - 2.4) / .6 : 1; if (al > 0) { ctx.fillStyle = 'rgba(0,0,0,' + al + ')'; ctx.fillRect(0, 0, W, H); } }
+  }
+}
+// About 30 fps, like the board.
+let last = 0;
+function loop() { const now = performance.now(); if (now - last >= 33) { last = now; render(now / 1000); } setTimeout(loop, 16); }
+loop();
+})();
+</script>
+</body>
+</html>
