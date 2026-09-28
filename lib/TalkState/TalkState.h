@@ -51,7 +51,8 @@ class TalkState {
     void begin(uint32_t nowMs);
     uint8_t update(uint32_t nowMs, const Input &in);
 
-    // For tests on the board: a shorter idle time.
+    // For tests on the board: a shorter idle time, or 0 to stay on (while
+    // developing, a board that powered itself off can't be flashed).
     void setIdleTimeout(uint32_t ms) { idleMs_ = ms; }
     uint32_t idleTimeout() const { return idleMs_; }
 

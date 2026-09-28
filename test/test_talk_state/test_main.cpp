@@ -206,6 +206,15 @@ void test_a_shorter_idle_time_for_testing(void) {
     TEST_ASSERT_EQUAL_UINT8(TalkState::kStopMic, s.update(5000, In{}));
 }
 
+void test_idle_time_0_keeps_the_toy_on(void) {
+    TalkState s;
+    s.begin(0);
+    s.setIdleTimeout(0);
+    TEST_ASSERT_EQUAL_UINT8(TalkState::kNone, s.update(3600000, In{}));
+    TEST_ASSERT_EQUAL(Mode::Listening, s.mode());
+    TEST_ASSERT_FALSE(s.sleepy(3600000));
+}
+
 void test_idle_clock_survives_the_millis_rollover(void) {
     TalkState s;
     const uint32_t nearOverflow = 0xFFFFFF00u;
@@ -233,6 +242,7 @@ int main(int, char **) {
     RUN_TEST(test_the_idle_clock_stops_outside_listening);
     RUN_TEST(test_key1_while_waving_keeps_the_toy_on);
     RUN_TEST(test_a_shorter_idle_time_for_testing);
+    RUN_TEST(test_idle_time_0_keeps_the_toy_on);
     RUN_TEST(test_idle_clock_survives_the_millis_rollover);
 
     return UNITY_END();

@@ -11,16 +11,20 @@ heard and what it said, and checks:
   - clicks too short to be a phrase are dropped, a monologue is cut at 8 s;
   - the changed voice has the character's pitch (ratio within 8 %) and
     tempo, and the playback lasts as long as it should;
-  - how long the voice change took, and the frame rate.
+  - how long the voice change took, and the frame rate;
+  - with --mic, the Mac's microphone records the board's speaker, and the
+    sound in the air must be loud and have the character's pitch too.
 
     PY=~/.platformio/penv/bin/python
     $PY tools/talk_test.py                  # all three characters
     $PY tools/talk_test.py --chars 1 --quick
     $PY tools/talk_test.py --out /tmp/talk  # keeps WAVs and screenshots
+    $PY tools/talk_test.py --mic            # also listens with the Mac's mic
 
 Put the board 10-30 cm from the Mac's speaker, with the Mac's volume at a
 normal level. Needs pyserial (ships with PlatformIO); numpy only speeds up
-the pitch analysis.
+the pitch analysis; --mic needs ffmpeg and microphone access for the
+terminal.
 """
 import argparse
 import math
@@ -115,6 +119,23 @@ class Board:
             self.reader.echo = self._seen
 
 
+def find_mac_mic():
+    """ffmpeg's avfoundation index of the built-in microphone."""
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-f", "avfoundation", "-list_devices", "true",
+                          "-i", ""], capture_output=True, text=True).stderr
+    audio = out.split("audio devices:")[-1]
+    for line in audio.splitlines():
+        if "MacBook" in line and "Microphone" in line:
+            return line.split("[")[2].split("]")[0]
+    return "0"
+
+
+def record_mac(mic, path, seconds):
+    return subprocess.Popen(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "avfoundation",
+                             "-i", ":" + mic, "-t", "%.1f" % seconds, "-ac", "1", "-ar", "16000",
+                             "-y", path])
+
+
 def synthesize(tmp, name, voice, text):
     aiff = os.path.join(tmp, name + ".aiff")
     wav = os.path.join(tmp, name + ".wav")
@@ -157,7 +178,7 @@ class Checks:
         print("   %s %-34s %s" % ("ok  " if ok else "FAIL", label, detail))
 
 
-def run_phrase(board, checks, char, tmp, out, case):
+def run_phrase(board, checks, char, tmp, out, case, mic=None):
     name, voice, text, volume, expect = case
     label = "%s/%s" % (NAMES[char], name)
     aiff, said, rate = synthesize(tmp, name, voice, text)
@@ -176,6 +197,13 @@ def run_phrase(board, checks, char, tmp, out, case):
         checks.check(label + " caught", False, "no heard start/end (start %s)" % t_heard)
         return
     kept_ms = int(end_line.split()[3])
+    recorder = None
+    air = os.path.join(tmp, "air.wav")
+    if mic is not None:
+        # From now until the playback is surely over.
+        if os.path.exists(air):
+            os.remove(air)
+        recorder = record_mac(mic, air, kept_ms / 1000.0 / TEMPO[char] + 2.0)
     # From the Mac's last loud sound (afplay starts about 0.1 s late).
     lag = t_end - (start + voice_to)
     if expect == "cut":
@@ -207,6 +235,8 @@ def run_phrase(board, checks, char, tmp, out, case):
     checks.check(label + " playback", abs(play_ms / 1000.0 - expected_s) < 0.35,
                  "%.2f s for %.2f s of sound" % (play_ms / 1000.0, expected_s))
 
+    if recorder is not None:
+        recorder.wait()
     ensure_listening(board)
     heard, r1 = board.pcm("in")
     changed, r2 = board.pcm("out")
@@ -220,6 +250,16 @@ def run_phrase(board, checks, char, tmp, out, case):
     checks.check(label + " loudness", aa.peak_dbfs(changed) > -3,
                  "heard peak %.1f dBFS, said peak %.1f dBFS" % (aa.peak_dbfs(heard),
                                                                aa.peak_dbfs(changed)))
+    if recorder is not None and os.path.exists(air):
+        in_air, r3 = aa.read_wav(air)
+        loud = max((aa.dbfs(in_air[i:i + 8000]) for i in range(0, max(1, len(in_air) - 8000), 4000)),
+                   default=-120)
+        checks.check(label + " heard in the air", loud > -45, "loudest 0.5 s at %.1f dBFS" % loud)
+        ratio_air, _, f_air = aa.pitch_ratio(heard, in_air, r1)
+        checks.check(label + " pitch in the air", ratio_air > 0 and abs(ratio_air / want - 1) <= 0.12,
+                     "x%.2f (want x%.2f): %.0f Hz" % (ratio_air, want, f_air))
+        if out:
+            os.replace(air, os.path.join(out, label.replace("/", "_") + "_air.wav"))
     if out:
         base = os.path.join(out, label.replace("/", "_"))
         aa.write_wav(base + "_heard.wav", heard, r1)
@@ -273,6 +313,7 @@ def main():
     ap.add_argument("--quick", action="store_true", help="two phrases per character")
     ap.add_argument("--out", help="folder for WAVs and screenshots")
     ap.add_argument("--quiet", action="store_true", help="do not print the board's events")
+    ap.add_argument("--mic", action="store_true", help="record the board's speaker with the Mac's mic")
     args = ap.parse_args()
 
     tmp = tempfile.mkdtemp(prefix="talk_test_")
@@ -282,6 +323,7 @@ def main():
     checks = Checks()
     board.pump(0.5)
     phrases = [p for p in PHRASES if not args.quick or p[0] in QUICK]
+    mic = find_mac_mic() if args.mic else None
 
     print("== silence and clicks")
     run_silence(board, checks, 6 if args.quick else 10)
@@ -293,7 +335,7 @@ def main():
             checks.check(NAMES[char] + " selected", False, "the board did not switch")
             continue
         for case in phrases:
-            run_phrase(board, checks, char, tmp, args.out, case)
+            run_phrase(board, checks, char, tmp, args.out, case, mic)
     select(board, 0)
 
     print("\n%d checks, %d failed" % (len(checks.rows), checks.failed))

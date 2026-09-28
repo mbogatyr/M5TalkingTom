@@ -31,7 +31,7 @@ uint8_t TalkState::update(uint32_t nowMs, const Input &in) {
         if (in.phraseStarted) {
             idleBeforeHearing_ = nowMs - lastActivity_;
             enter(Mode::Hearing, nowMs);
-        } else if (nowMs - lastActivity_ >= idleMs_) {
+        } else if (idleMs_ > 0 && nowMs - lastActivity_ >= idleMs_) {
             enter(Mode::Goodbye, nowMs);
             powerOffSent_ = false;
             actions |= kStopMic;
@@ -96,7 +96,7 @@ uint32_t TalkState::idleFor(uint32_t nowMs) const {
 }
 
 bool TalkState::sleepy(uint32_t nowMs) const {
-    if (mode_ != Mode::Listening) {
+    if (mode_ != Mode::Listening || idleMs_ == 0) {
         return false;
     }
     const uint32_t from = idleMs_ > kSleepyForMs ? idleMs_ - kSleepyForMs : 0;
