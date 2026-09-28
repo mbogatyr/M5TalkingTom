@@ -260,6 +260,20 @@ The upload form is at burner.m5stack.com/developer/firmware/upload. It asks for:
 - visibility: Public requires moderation;
 - a cover image: a screenshot of the screen works.
 
+The upload is done through Claude in Chrome, where the user is signed in and
+files can be attached (the built-in browser can't attach files). Copy the
+image and the cover into `dist/` first (ignored by git):
+`dist/M5TalkingTom-v<version>.bin` and `dist/M5TalkingTom-cover.png`. The
+cover is 1440x810 (the shape M5Burner shows): the three characters'
+listening screens from the board, 3x with nearest-neighbour, side by side on
+the top bar's colour `#1B1720`.
+
+v1.0.0 was uploaded on 2026-09-28 as "Talking Tom" (the name the user chose;
+"Talking Tom" is Outfit7's trademark, which moderation may object to),
+category Games, StickS3, Public, and went to review (Pending). Before the
+upload the merged image was written on its own at 0x0 with esptool
+`write_flash 0x0`, the way M5Burner writes it, and the board booted into it.
+
 ### Powering off
 
 The side button is handled by the PMIC, not the firmware:
