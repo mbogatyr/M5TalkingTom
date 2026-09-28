@@ -102,7 +102,8 @@ The split into `lib/` and `src/` is not cosmetic here, it is load-bearing:
   - `BlockRing` — which mic blocks are finished (from M5VoiceRecorder), with
     `reset()` for the mic restarts.
 - `src/` is everything that knows about the board: `AudioCapture` (mic at
-  16 kHz), `VoicePlayer` (speaker at 48 kHz, volume 200), `Painter` and
+  16 kHz), `VoicePlayer` (speaker at 48 kHz, volume 255, magnification 4:
+  see "Loudness" below), `Painter` and
   `Renderer` (the display), `main.cpp` (wiring, serial events and test
   commands, power off).
 
@@ -186,15 +187,28 @@ Commands: `k` (KEY1), `c <n>` (character), `s` (screenshot, `SNAP w h` +
 RGB565), `pin` / `pout` (the last phrase heard / said, `PCM <which> <n>
 <rate>` + int16 LE), `idle <s>` (0 = never power off), `st` (status), `perf`
 (a line a second: paint, push, fps, loop, lost blocks), `lv` (mic levels
-every 100 ms), `bench` (times each voice change pass on the last phrase).
+every 100 ms), `bench` (times each voice change pass on the last phrase),
+`vol <0-255>` and `mag <n>` (speaker volume and M5Unified magnification until
+the next reset), `replay` (says the last phrase again; blocks the loop).
 
 Results on 2026-09-28 (board 20–30 cm from the MacBook's speaker): room noise
 -48…-53 dBFS, the Mac's speech -24 dBFS at the start of a phrase, peaks -13
-dBFS; every check passes for all three characters; the voice change takes
-about 220 ms (cat), 190 ms (hippo) and 300 ms (mouse) for a 4.5 s phrase,
-550 ms for 8 s; the toy answers about 0.9 s after the speaker goes quiet
+dBFS; all 154 checks of `talk_test.py --mic` pass; the voice change takes
+about 250-330 ms for a 4.5 s phrase, 470-600 ms for 8 s; the toy answers about 0.9 s after the speaker goes quiet
 (0.7 s of that is the wait for more speech). Pitch on the board: cat ×1.6,
 hippo ×0.62, mouse ×2.14–2.18.
+
+**Loudness.** M5Unified's settings for the StickS3 speaker (magnification
+1) play a -1 dBFS phrase about 20 dB below what the speaker can do.
+Measured with the Mac's microphone (`vol`, `mag` and `replay` commands):
++6 dB per doubling of the magnification up to 4, only +4.8 dB at 8 (the
+peaks clip). So `VoicePlayer` uses volume 255 and magnification 4, and
+`VoiceChanger` adds 8 dB with a peak limiter. The board then sounds at
+-20…-30 dBFS on the Mac's microphone, about as loud as the Mac's own speaker
+(-24 dBFS), instead of -55 dBFS. The tiny speaker hardly plays anything
+below ~200 Hz: the hippo's bass comes across through its harmonics (the
+soft clipping adds more of them), and its pitch in the air cannot be
+measured reliably.
 
 **Opening the port.** The USB-Serial-JTAG resets the chip while RTS is high
 and DTR is low; `serial_cmd.open_port()` (from M5VoiceRecorder) keeps DTR
@@ -260,10 +274,17 @@ The idle power-off calls `M5.Power.powerOff()` (M5Unified 0.2.23, which
 fixed the StickS3 waking up again by timer,
 [M5Unified#235](https://github.com/m5stack/M5Unified/issues/235)). If the
 board is still running a second later, it turns the display off and goes
-into deep sleep with no wake-up source. On 2026-09-28 the board, plugged into
-the Mac, powered itself off after two quiet minutes and stayed off (its USB
-port disappeared) until the side button was pressed: the power-off works on
-USB power too and does not wake by itself.
+into deep sleep with no wake-up source. Checked on 2026-09-28 with the board
+plugged into the Mac (twice: after two quiet minutes, and with `idle 8`): it
+printed `EV off` but never `EV still on`, its USB port disappeared and it
+stayed off until the side button was pressed. So `M5.Power.powerOff()` cuts
+the power itself, on USB power too, and the board does not wake up by
+itself.
+
+Testing the goodbye without losing the board: the idle clock counts from the
+last activity (a phrase, a KEY1 press), not from the `idle` command, and the
+goodbye lasts 3 s before the power goes. Send `k` within those 3 s to cancel
+it.
 
 ### If flashing fails
 
