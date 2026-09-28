@@ -35,10 +35,11 @@ class M5Canvas {
     explicit M5Canvas(void *) {}
     void setColorDepth(int) {}
     void setPsram(bool) {}
-    void createSprite(int w, int h) {
+    void *createSprite(int w, int h) {
         w_ = w;
         h_ = h;
         pixels_.assign(static_cast<size_t>(w * h), 0);
+        return pixels_.data();
     }
     void *getBuffer() { return pixels_.data(); }
     int width() const { return w_; }

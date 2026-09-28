@@ -15,7 +15,13 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr float kTargetPeak = 29204.0f; // -1 dBFS
-constexpr float kMaxGain = 10.0f;       // +20 dB
+constexpr float kMaxGain = 10.0f;       // +20 dB in all
+// Louder than peak normalisation alone: +8 dB, with a limiter holding the
+// peaks at -1 dBFS. The tiny speaker needs every decibel, and quiet
+// syllables come up closer to the loud ones.
+constexpr float kLoudness = 2.5f;
+// The limiter's envelope drops by 1/e in 40 ms after a peak.
+constexpr float kLimiterRelease = 0.99844f;
 constexpr size_t kFade = 128;           // 8 ms at each end
 // One-pole high-pass: y = x - x' + p * y'. 0.97 puts the corner near
 // 80 Hz at 16 kHz.
@@ -290,7 +296,8 @@ void VoiceChanger::resampleChunk() {
 void VoiceChanger::prepareFinish() {
     // Soft clipping maps the peak onto itself, so the gain can be chosen
     // before it is applied.
-    gain_ = peak_ > 0 ? std::min(kTargetPeak / static_cast<float>(peak_), kMaxGain) : 0.0f;
+    gain_ = peak_ > 0 ? std::min(kTargetPeak * kLoudness / static_cast<float>(peak_), kMaxGain) : 0.0f;
+    envelope_ = 0;
     drivePeak_ = static_cast<float>(std::max<int32_t>(peak_, 1));
     driveNorm_ = voice_.drive > 0 ? 1.0f / softClip(voice_.drive) : 1.0f;
     finishPos_ = 0;
@@ -306,6 +313,12 @@ void VoiceChanger::finishChunk() {
             x = drivePeak_ * softClip(voice_.drive * x / drivePeak_) * driveNorm_;
         }
         x *= gain_;
+        // Peak limiter: instant attack, so no sample gets past the target.
+        const float a = fabsf(x);
+        envelope_ = std::max(a, envelope_ * kLimiterRelease);
+        if (envelope_ > kTargetPeak) {
+            x *= kTargetPeak / envelope_;
+        }
         if (i < fade) {
             x *= static_cast<float>(i) / fade;
         } else if (i + fade >= outLen_) {

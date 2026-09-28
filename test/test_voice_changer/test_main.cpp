@@ -102,7 +102,10 @@ void test_vibrato_keeps_the_mean_pitch(void) {
 }
 
 // WSOLA splices windows where the waveforms line up: a clean tone stays
-// clean, with no step bigger than the tone's own steepest slope allows.
+// clean, with no step much bigger than the tone's own steepest slope. The
+// limiter flattens the tops, which makes the slope near zero up to about
+// 1.3 times a pure sine's of the same peak; a bad splice would jump by up
+// to twice the peak.
 void test_splices_leave_no_clicks(void) {
     const std::vector<int16_t> in = sine(200, 12000, 24000);
     const Voice all[] = {voices::kCat, voices::kHippo, voices::kMouse};
@@ -114,7 +117,7 @@ void test_splices_leave_no_clicks(void) {
         for (size_t i = 1; i < r.len; ++i) {
             worst = std::max(worst, static_cast<int32_t>(abs(r.out[i] - r.out[i - 1])));
         }
-        TEST_ASSERT_TRUE_MESSAGE(worst <= 1.3 * slope, "a click in the output");
+        TEST_ASSERT_TRUE_MESSAGE(worst <= 1.6 * slope, "a click in the output");
     }
 }
 
@@ -131,6 +134,24 @@ void test_gain_is_capped_at_20_db(void) {
     const Result r = process(sine(200, 300, 24000), clean(voices::kCat));
     const int32_t peak = peakOf(r.out, r.len);
     TEST_ASSERT_INT_WITHIN(300, 3000, peak);
+}
+
+// The limiter lifts quiet syllables: a phrase whose second half is 12 dB
+// quieter comes out with that half well above a plain peak normalisation
+// (which would leave it at 29204 / 4 = 7301).
+void test_quiet_syllables_come_up(void) {
+    std::vector<int16_t> in = sine(200, 20000, 32000);
+    for (size_t i = 16000; i < in.size(); ++i) {
+        in[i] /= 4;
+    }
+    const Result r = process(in, clean(voices::kCat));
+    const size_t half = r.len / 2;
+    int32_t quietPeak = 0;
+    for (size_t i = half + 2000; i < r.len - 2000; ++i) {
+        quietPeak = std::max(quietPeak, static_cast<int32_t>(abs(r.out[i])));
+    }
+    TEST_ASSERT_TRUE(quietPeak > 1.8 * 7301);
+    TEST_ASSERT_TRUE(peakOf(r.out, r.len) <= 29204);
 }
 
 void test_silence_stays_silent(void) {
@@ -195,6 +216,7 @@ int main(int, char **) {
     RUN_TEST(test_splices_leave_no_clicks);
     RUN_TEST(test_output_is_normalised_to_minus_1_dbfs);
     RUN_TEST(test_gain_is_capped_at_20_db);
+    RUN_TEST(test_quiet_syllables_come_up);
     RUN_TEST(test_silence_stays_silent);
     RUN_TEST(test_small_steps_give_the_same_output);
     RUN_TEST(test_a_too_short_input_gives_nothing);

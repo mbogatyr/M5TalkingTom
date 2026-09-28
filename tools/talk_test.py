@@ -104,19 +104,12 @@ class Board:
                 return line
         return None
 
+    # Events that arrive while waiting for the reply header still count.
     def pcm(self, which):
-        self.reader.echo = None
-        try:
-            return sc.get_pcm(self.link, self.reader, which)
-        finally:
-            self.reader.echo = self._seen
+        return sc.get_pcm(self.link, self.reader, which)
 
     def snap(self, path):
-        self.reader.echo = None
-        try:
-            sc.snap(self.link, self.reader, path, scale=2)
-        finally:
-            self.reader.echo = self._seen
+        sc.snap(self.link, self.reader, path, scale=2)
 
 
 def find_mac_mic():
@@ -176,6 +169,9 @@ class Checks:
         if not ok:
             self.failed += 1
         print("   %s %-34s %s" % ("ok  " if ok else "FAIL", label, detail))
+
+    def info(self, label, detail):
+        print("   %s %-34s %s" % ("info", label, detail))
 
 
 def run_phrase(board, checks, char, tmp, out, case, mic=None):
@@ -247,7 +243,10 @@ def run_phrase(board, checks, char, tmp, out, case, mic=None):
     tempo = len(heard) / max(1, len(changed))
     checks.check(label + " tempo", abs(tempo / TEMPO[char] - 1) <= 0.05,
                  "x%.2f (want x%.2f)" % (tempo, TEMPO[char]))
-    checks.check(label + " loudness", aa.peak_dbfs(changed) > -3,
+    # Peaks at -1 dBFS, unless the phrase was so quiet that the +20 dB cap
+    # held it back (the filters shift the peak by a couple of dB).
+    loud_enough = min(-3.0, aa.peak_dbfs(heard) + 16)
+    checks.check(label + " loudness", aa.peak_dbfs(changed) > loud_enough,
                  "heard peak %.1f dBFS, said peak %.1f dBFS" % (aa.peak_dbfs(heard),
                                                                aa.peak_dbfs(changed)))
     if recorder is not None and os.path.exists(air):
@@ -256,8 +255,17 @@ def run_phrase(board, checks, char, tmp, out, case, mic=None):
                    default=-120)
         checks.check(label + " heard in the air", loud > -45, "loudest 0.5 s at %.1f dBFS" % loud)
         ratio_air, _, f_air = aa.pitch_ratio(heard, in_air, r1)
-        checks.check(label + " pitch in the air", ratio_air > 0 and abs(ratio_air / want - 1) <= 0.12,
-                     "x%.2f (want x%.2f): %.0f Hz" % (ratio_air, want, f_air))
+        detail = "x%.2f (want x%.2f): %.0f Hz" % (ratio_air, want, f_air)
+        if want < 1:
+            # The tiny speaker hardly plays the hippo's 100-140 Hz
+            # fundamental; the bass comes across through its harmonics, and
+            # the pitch tracker latches onto those.
+            checks.info(label + " pitch in the air", detail + ", below the speaker's range")
+        elif kept_ms < 1500:
+            checks.info(label + " pitch in the air", detail + ", too short to measure")
+        else:
+            checks.check(label + " pitch in the air",
+                         ratio_air > 0 and abs(ratio_air / want - 1) <= 0.12, detail)
         if out:
             os.replace(air, os.path.join(out, label.replace("/", "_") + "_air.wav"))
     if out:

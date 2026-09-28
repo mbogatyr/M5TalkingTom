@@ -1,12 +1,13 @@
-// Every frame goes through these loops; -O2 makes them about twice as fast
-// as the core's -Os.
-#pragma GCC optimize("O2")
+// Every frame goes through these loops: -O2 instead of the core's -Os, and
+// fast-math so that sqrtf and divisions stay inline instructions.
+#pragma GCC optimize("O2", "fast-math")
 
 #include "Painter.h"
 
 #include <math.h>
 
 #include <algorithm>
+
 
 namespace {
 
@@ -80,6 +81,12 @@ void Painter::span(int y, int x0, int x1, uint16_t c) {
     }
 }
 
+inline void Painter::put(int x, int y, uint16_t swapped) {
+    if (x >= cx0_ && x < cx1_ && y >= cy0_ && y < cy1_) {
+        buf_[y * w_ + x] = swapped;
+    }
+}
+
 void Painter::blend(int x, int y, uint16_t c, float coverage) {
     if (x < cx0_ || x >= cx1_ || y < cy0_ || y >= cy1_ || coverage <= 0.02f) {
         return;
@@ -106,6 +113,7 @@ void Painter::ellipseAt(float cx, float cy, float rx, float ry, uint16_t c) {
         return;
     }
     const float irx2 = 1.0f / (rx * rx), iry2 = 1.0f / (ry * ry);
+    const uint16_t sc = static_cast<uint16_t>((c >> 8) | (c << 8));
     const int y0 = std::max(cy0_, static_cast<int>(floorf(cy - ry - 1)));
     const int y1 = std::min(cy1_, static_cast<int>(ceilf(cy + ry + 1)));
     for (int y = y0; y < y1; ++y) {
@@ -138,9 +146,15 @@ void Painter::ellipseAt(float cx, float cy, float rx, float ry, uint16_t c) {
             const float px = x + 0.5f - cx;
             const float f = px * px * irx2 + py * py * iry2 - 1.0f;
             const float gx = 2 * px * irx2, gy = 2 * py * iry2;
-            const float g = sqrtf(gx * gx + gy * gy);
-            const float d = g > 1e-6f ? f / g : -1.0f;
-            blend(x, y, c, 0.5f - d);
+            const float g2 = gx * gx + gy * gy;
+            // |d| = |f| / g >= 0.5 decides the pixel without a square root.
+            if (f * f >= 0.25f * g2) {
+                if (f < 0) {
+                    put(x, y, sc);
+                }
+                continue;
+            }
+            blend(x, y, c, 0.5f - f / sqrtf(g2));
         }
     }
 }
@@ -170,6 +184,7 @@ void Painter::triangleAt(float x0, float y0, float x1, float y1, float x2, float
         eb[i] = b;
         ec[i] = cc;
     }
+    const uint16_t sc = static_cast<uint16_t>((c >> 8) | (c << 8));
     const int yTop = std::max(cy0_, static_cast<int>(floorf(std::min({y0, y1, y2}) - 1)));
     const int yEnd = std::min(cy1_, static_cast<int>(ceilf(std::max({y0, y1, y2}) + 1)));
     const float xMin = std::min({x0, x1, x2}) - 1, xMax = std::max({x0, x1, x2}) + 1;
@@ -197,7 +212,11 @@ void Painter::triangleAt(float x0, float y0, float x1, float y1, float x2, float
             float m = ea[0] * px + eb[0] * py + ec[0];
             m = std::min(m, ea[1] * px + eb[1] * py + ec[1]);
             m = std::min(m, ea[2] * px + eb[2] * py + ec[2]);
-            blend(x, y, c, m + 0.5f);
+            if (m >= 0.5f) {
+                put(x, y, sc);
+            } else if (m > -0.5f) {
+                blend(x, y, c, m + 0.5f);
+            }
         }
     }
 }
@@ -208,6 +227,11 @@ void Painter::lineAt(float x0, float y0, float x1, float y1, float r, uint16_t c
     const float reach = r + 1.0f;
     const float dx = x1 - x0, dy = y1 - y0;
     const float len2 = dx * dx + dy * dy;
+    const float invLen2 = len2 > 0 ? 1.0f / len2 : 0.0f;
+    // Squared distances beyond which a pixel is untouched / fully covered.
+    const float outer2 = (r + 0.5f) * (r + 0.5f);
+    const float inner2 = r > 0.5f ? (r - 0.5f) * (r - 0.5f) : -1.0f;
+    const uint16_t sc = static_cast<uint16_t>((c >> 8) | (c << 8));
     const int yTop = std::max(cy0_, static_cast<int>(floorf(std::min(y0, y1) - reach)));
     const int yEnd = std::min(cy1_, static_cast<int>(ceilf(std::max(y0, y1) + reach)));
     for (int y = yTop; y < yEnd; ++y) {
@@ -230,10 +254,18 @@ void Painter::lineAt(float x0, float y0, float x1, float y1, float r, uint16_t c
         const int xe = static_cast<int>(ceilf(std::max(xa, xb) + reach));
         for (int x = xs; x < xe; ++x) {
             const float px = x + 0.5f;
-            float t = len2 > 0 ? ((px - x0) * dx + (py - y0) * dy) / len2 : 0.0f;
+            float t = ((px - x0) * dx + (py - y0) * dy) * invLen2;
             t = clamp01(t);
             const float qx = px - (x0 + t * dx), qy = py - (y0 + t * dy);
-            blend(x, y, c, r + 0.5f - sqrtf(qx * qx + qy * qy));
+            const float d2 = qx * qx + qy * qy;
+            if (d2 >= outer2) {
+                continue;
+            }
+            if (d2 <= inner2) {
+                put(x, y, sc);
+            } else {
+                blend(x, y, c, r + 0.5f - sqrtf(d2));
+            }
         }
     }
 }
@@ -255,25 +287,33 @@ void Painter::roundRectAt(float x, float y, float w, float h, float r, uint16_t 
     }
 }
 
+// For arcs shorter than half a turn: a pixel is within the angles when it
+// lies left of the start direction and right of the end one.
 void Painter::arcAt(float x, float y, float r, float half, float a0, float a1, uint16_t c) {
     const float reach = r + half + 1;
-    const float ex0 = x + r * cosf(a0), ey0 = y + r * sinf(a0);
-    const float ex1 = x + r * cosf(a1), ey1 = y + r * sinf(a1);
+    const float sx = cosf(a0), sy = sinf(a0), ex = cosf(a1), ey = sinf(a1);
+    const float ex0 = x + r * sx, ey0 = y + r * sy, ex1 = x + r * ex, ey1 = y + r * ey;
+    const float lo = std::max(0.0f, r - half - 1), hi = r + half + 1;
+    const float lo2 = lo * lo, hi2 = hi * hi;
     const int yTop = std::max(cy0_, static_cast<int>(floorf(y - reach)));
     const int yEnd = std::min(cy1_, static_cast<int>(ceilf(y + reach)));
+    const int xs = static_cast<int>(floorf(x - reach)), xe = static_cast<int>(ceilf(x + reach));
     for (int row = yTop; row < yEnd; ++row) {
-        const float py = row + 0.5f;
-        for (int col = static_cast<int>(floorf(x - reach)); col < static_cast<int>(ceilf(x + reach)); ++col) {
-            const float px = col + 0.5f;
-            const float a = atan2f(py - y, px - x);
+        const float vy = row + 0.5f - y;
+        for (int col = xs; col < xe; ++col) {
+            const float vx = col + 0.5f - x;
+            const float d2 = vx * vx + vy * vy;
+            if (d2 < lo2 || d2 > hi2) {
+                continue;
+            }
             float d;
-            if (a >= a0 && a <= a1) {
-                d = fabsf(sqrtf((px - x) * (px - x) + (py - y) * (py - y)) - r);
+            if (sx * vy - sy * vx >= 0 && vx * ey - vy * ex >= 0) {
+                d = fabsf(sqrtf(d2) - r);
             } else {
                 // Round caps at both ends.
-                const float d0 = sqrtf((px - ex0) * (px - ex0) + (py - ey0) * (py - ey0));
-                const float d1 = sqrtf((px - ex1) * (px - ex1) + (py - ey1) * (py - ey1));
-                d = std::min(d0, d1);
+                const float d0 = (col + 0.5f - ex0) * (col + 0.5f - ex0) + (row + 0.5f - ey0) * (row + 0.5f - ey0);
+                const float d1 = (col + 0.5f - ex1) * (col + 0.5f - ex1) + (row + 0.5f - ey1) * (row + 0.5f - ey1);
+                d = sqrtf(std::min(d0, d1));
             }
             blend(col, row, c, half + 0.5f - d);
         }

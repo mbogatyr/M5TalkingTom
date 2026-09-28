@@ -166,6 +166,25 @@ void bench() {
     }
 }
 
+// Test hook: says the last changed phrase again, for comparing loudness.
+// Blocks the loop (the animation stops) while it plays.
+void replay() {
+    if (state.mode() != Mode::Listening || changer.length() == 0) {
+        Serial.println("ERR replay needs a phrase and listening");
+        return;
+    }
+    mic.stop();
+    speaker.play(output, changer.length(), VoiceChanger::kSampleRate);
+    Serial.println("EV replay start");
+    delay(kPlaybackGraceMs);
+    while (speaker.playing()) {
+        delay(10);
+    }
+    speaker.stop();
+    Serial.println("EV replay end");
+    startMic(millis());
+}
+
 void printStatus(uint32_t now) {
     Serial.printf("ST mode %s char %u idle %u timeout %u noise %.1f level %.1f lost %u\n",
                   modeName(state.mode()), state.character(),
@@ -192,6 +211,16 @@ void runCommand(const char *line, uint32_t now) {
         Serial.printf("OK idle %u\n", static_cast<unsigned>(state.idleTimeout()));
     } else if (strcmp(line, "bench") == 0) {
         bench();
+    } else if (strncmp(line, "mag ", 4) == 0) {
+        auto cfg = M5.Speaker.config();
+        cfg.magnification = static_cast<uint8_t>(atoi(line + 4));
+        M5.Speaker.config(cfg);
+        Serial.printf("OK mag %u\n", cfg.magnification);
+    } else if (strcmp(line, "replay") == 0) {
+        replay();
+    } else if (strncmp(line, "vol ", 4) == 0) {
+        speaker.setVolume(static_cast<uint8_t>(atoi(line + 4)));
+        Serial.printf("OK vol %u\n", speaker.volume());
     } else if (strcmp(line, "st") == 0) {
         printStatus(now);
     } else if (strcmp(line, "perf") == 0) {

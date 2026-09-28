@@ -81,8 +81,13 @@ void Renderer::begin() {
     M5.Display.fillScreen(TFT_BLACK);
 
     canvas_.setColorDepth(16);
-    canvas_.setPsram(true); // 135*240*2 = 65 KB; the StickS3 has 8 MB of PSRAM
-    canvas_.createSprite(M5.Display.width(), M5.Display.height());
+    // 135*240*2 = 65 KB in internal RAM: Painter reads and writes single
+    // pixels, and through the PSRAM cache that made a frame take 26 ms.
+    canvas_.setPsram(false);
+    if (canvas_.createSprite(M5.Display.width(), M5.Display.height()) == nullptr) {
+        canvas_.setPsram(true);
+        canvas_.createSprite(M5.Display.width(), M5.Display.height());
+    }
     p_.begin(static_cast<uint16_t *>(canvas_.getBuffer()), canvas_.width(), canvas_.height());
 }
 

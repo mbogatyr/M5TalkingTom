@@ -91,6 +91,7 @@ class Painter {
     void line(float x0, float y0, float x1, float y1, float r, uint16_t c, bool outlined);
 
     void span(int y, int x0, int x1, uint16_t c);
+    void put(int x, int y, uint16_t swapped);
     void blend(int x, int y, uint16_t c, float coverage);
 
     uint16_t *buf_ = nullptr;

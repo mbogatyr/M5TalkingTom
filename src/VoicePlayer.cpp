@@ -5,14 +5,15 @@ void VoicePlayer::begin() {
     // M5Unified resamples every sound to this rate; 48 kHz keeps the
     // 16 kHz phrase's interpolation images far above hearing.
     cfg.sample_rate = 48000;
+    cfg.magnification = kMagnification;
     M5.Speaker.config(cfg);
 }
 
 void VoicePlayer::play(const int16_t *samples, size_t len, uint32_t sampleRate) {
     if (!on_) {
         on_ = M5.Speaker.begin();
-        M5.Speaker.setVolume(kVolume);
     }
+    M5.Speaker.setVolume(volume_);
     M5.Speaker.playRaw(samples, len, sampleRate, false, 1, 0, true);
 }
 

@@ -34,9 +34,10 @@ const Voice &forCharacter(uint8_t character);
 //     tempo's length and raises (or lowers) every frequency, formants
 //     included: that is what makes a cartoon voice rather than a sped-up
 //     tape. The vibrato wobbles the resampling step.
-//  4. Optional soft clipping, then the whole phrase is scaled so that its
-//     peak sits at -1 dBFS (but never by more than +20 dB, so a quiet phrase
-//     does not turn into loud hiss), with short fades at both ends.
+//  4. Optional soft clipping, then the whole phrase is scaled 8 dB above
+//     the gain that would put its peak at -1 dBFS (but never by more than
+//     +20 dB in all, so a quiet phrase does not turn into loud hiss); a
+//     peak limiter keeps it at -1 dBFS. Short fades at both ends.
 //
 // The work is split into small steps so that the caller can keep drawing
 // frames in between. All buffers belong to the caller.
@@ -122,4 +123,5 @@ class VoiceChanger {
     float gain_ = 0;
     float drivePeak_ = 1;
     float driveNorm_ = 1;
+    float envelope_ = 0;
 };
